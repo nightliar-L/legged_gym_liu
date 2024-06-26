@@ -109,7 +109,9 @@ class LeggedRobot(BaseTask):
         """
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
-
+        # ----------------
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        # ----------------
         self.episode_length_buf += 1
         self.common_step_counter += 1
 
@@ -138,10 +140,37 @@ class LeggedRobot(BaseTask):
     def check_termination(self):
         """ Check if environments need to be reset
         """
-        self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
-        self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
-        self.reset_buf |= self.time_out_buf
+        # self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
+        # self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+        # self.reset_buf |= self.time_out_buf
+        # ----------------------
+        if self.cfg.asset.self_collisions :
+            self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
+            self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+            self.reset_buf |= self.time_out_buf
+        else :
+            # 重塑张量以便按环境和刚体索引访问
+            rigid_states_tensor = self.rigid_states.view(self.num_envs, self.num_bodies, -1)
 
+            # 获取左脚和右脚的位置信息 (z轴方向)
+            leg_positions = rigid_states_tensor[:, self.feet_indices, 2]
+
+            # 获取头部的位置信息 (z轴方向)
+            head_positions = rigid_states_tensor[:, self.head_indices, 2]
+  
+            # 计算头部与左脚的垂直方向的差值
+            head_to_left_foot_vertical_diff = head_positions[:, 0] - leg_positions[:, 0]
+           
+            # 计算头部与右脚的垂直方向的差值
+            head_to_right_foot_vertical_diff = head_positions[:, 0] - leg_positions[:, 1]
+            
+            # 检查每个机器人的差值是否有一个小于等于0.1
+            self.reset_buf = (torch.abs(head_to_left_foot_vertical_diff) <= 0.15) | (torch.abs(head_to_right_foot_vertical_diff) <= 0.15)
+            # self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
+            # print(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1))
+            self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+            self.reset_buf |= self.time_out_buf
+        # -----------------
     def reset_idx(self, env_ids):
         """ Reset some environments.
             Calls self._reset_dofs(env_ids), self._reset_root_states(env_ids), and self._resample_commands(env_ids)
@@ -485,13 +514,22 @@ class LeggedRobot(BaseTask):
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
         net_contact_forces = self.gym.acquire_net_contact_force_tensor(self.sim)
+        # ----------------------
+        actor_rigid_states = self.gym.acquire_rigid_body_state_tensor(self.sim)
+        # ----------------------
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
+        # -----------------------
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        # -----------------------
 
         # create some wrapper tensors for different slices
         self.root_states = gymtorch.wrap_tensor(actor_root_state)
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
+        # -----------------------
+        self.rigid_states = gymtorch.wrap_tensor(actor_rigid_states)
+        # -----------------------
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
         self.base_quat = self.root_states[:, 3:7]
@@ -526,7 +564,8 @@ class LeggedRobot(BaseTask):
         self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
         for i in range(self.num_dofs):
             name = self.dof_names[i]
-            angle = self.cfg.init_state.default_joint_angles[name]
+            # angle = self.cfg.init_state.default_joint_angles[name]
+            angle = 0
             self.default_dof_pos[i] = angle
             found = False
             for dof_name in self.cfg.control.stiffness.keys():
@@ -638,7 +677,18 @@ class LeggedRobot(BaseTask):
         asset_options.armature = self.cfg.asset.armature
         asset_options.thickness = self.cfg.asset.thickness
         asset_options.disable_gravity = self.cfg.asset.disable_gravity
-
+        # ----------------
+        if not self.cfg.asset.self_collisions :
+            asset_options.vhacd_enabled = True
+            asset_options.vhacd_params = gymapi.VhacdParams()
+            asset_options.vhacd_params.resolution = 1000000
+        
+        # print("Loading asset '%s' from '%s'" % (asset_file, asset_root))
+        # asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
+        # # create an array of DOF states that will be used to update the actors
+        # num_dofs = self.gym.get_asset_dof_count(asset)
+        # dof_states = np.zeros(num_dofs, dtype=gymapi.DofState.dtype)
+        # ----------------
         robot_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
         self.num_dof = self.gym.get_asset_dof_count(robot_asset)
         self.num_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
@@ -685,6 +735,22 @@ class LeggedRobot(BaseTask):
             self.gym.set_actor_rigid_body_properties(env_handle, actor_handle, body_props, recomputeInertia=True)
             self.envs.append(env_handle)
             self.actor_handles.append(actor_handle)
+            # ------------------------------------------
+            # set default DOF positions
+            # self.gym.set_actor_dof_states(i, env_handle, dof_states, gymapi.STATE_ALL)
+            # --------------------------------
+
+        # ---------------
+        feet_dof_names = ["R_toe_joint","L_toe_joint"]
+        self.feet_dof_indices = torch.zeros(len(feet_dof_names), dtype=torch.long, device=self.device, requires_grad=False)
+        for i in range(len(feet_dof_names)):
+            self.feet_dof_indices[i] = self.gym.find_actor_dof_index(self.envs[0], self.actor_handles[0], feet_dof_names[i],gymapi.DOMAIN_SIM)
+        
+        head_name = [s for s in body_names if self.cfg.asset.head_name in s]
+        self.head_indices = torch.zeros(len(head_name), dtype=torch.long, device=self.device, requires_grad=False)
+        for i in range(len(head_name)):
+            self.head_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], head_name[i])
+        # ---------------
 
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):
@@ -858,6 +924,10 @@ class LeggedRobot(BaseTask):
         # Penalize dof positions too close to the limit
         out_of_limits = -(self.dof_pos - self.dof_pos_limits[:, 0]).clip(max=0.) # lower limit
         out_of_limits += (self.dof_pos - self.dof_pos_limits[:, 1]).clip(min=0.)
+        # # Ignore positions specified by feet_indices
+        # if hasattr(self, 'feet_dof_indices'):
+        #     for index in self.feet_dof_indices:
+        #         out_of_limits[:, index-1] = 0.0
         return torch.sum(out_of_limits, dim=1)
 
     def _reward_dof_vel_limits(self):
@@ -891,7 +961,6 @@ class LeggedRobot(BaseTask):
         rew_airTime *= torch.norm(self.commands[:, :2], dim=1) > 0.1 #no reward for zero command
         self.feet_air_time *= ~contact_filt
         return rew_airTime
-    
     def _reward_stumble(self):
         # Penalize feet hitting vertical surfaces
         return torch.any(torch.norm(self.contact_forces[:, self.feet_indices, :2], dim=2) >\

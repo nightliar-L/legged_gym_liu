@@ -87,6 +87,7 @@ class LeggedRobotCfg(BaseConfig):
             "joint_b": 0.}
 
     class control:
+        robot_type = "train"
         control_type = 'P' # P: position, V: velocity, T: torques
         # PD Drive parameters:
         stiffness = {'joint_a': 10.0, 'joint_b': 15.}  # [N*m/rad]
@@ -100,6 +101,7 @@ class LeggedRobotCfg(BaseConfig):
         file = ""
         name = "legged_robot"  # actor name
         foot_name = "None" # name of the feet bodies, used to index body state and contact force tensors
+        head_name = "None" # name of the head bodies, used to index body state and contact force tensors
         penalize_contacts_on = []
         terminate_after_contacts_on = []
         disable_gravity = False
@@ -129,21 +131,21 @@ class LeggedRobotCfg(BaseConfig):
 
     class rewards:
         class scales:
-            termination = -0.0
-            tracking_lin_vel = 1.0
-            tracking_ang_vel = 0.5
-            lin_vel_z = -2.0
-            ang_vel_xy = -0.05
-            orientation = -0.
-            torques = -0.00001
-            dof_vel = -0.
-            dof_acc = -2.5e-7
-            base_height = -0. 
-            feet_air_time =  1.0
-            collision = -1.
-            feet_stumble = -0.0 
-            action_rate = -0.01
-            stand_still = -0.
+            termination = -0.0  # 终止负奖励，当累计负奖励等于termination是，重置机器人
+            tracking_lin_vel = 1.0  # 与命令相关的线速度奖励
+            tracking_ang_vel = 0.5  # 与命令相关的角速度奖励
+            lin_vel_z = -2.0    # z轴上的线速度惩罚
+            ang_vel_xy = -0.05  # 水平方向的角速度惩罚
+            orientation = -0.       # 判断其头部是否水平
+            torques = -0.00001  # 扭矩的惩罚，防止扭矩过大
+            dof_vel = -0.       # 惩罚关节的线速度，防止过大
+            dof_acc = -2.5e-7   # 惩罚关节的角速度
+            base_height = -0.   # 惩罚机器人头部的水平高度，防止机器人头部上下摆动
+            feet_air_time =  1.0    # 双脚飞天的惩罚
+            collision = -1.     # 机器人惩罚部位，不重置
+            feet_stumble = -0.0 # 双脚碰到竖直表面的惩罚
+            action_rate = -0.01 # 惩罚动作变化频率，使动作更加稳定
+            stand_still = -0.   # 维持初始动作不变的惩罚
 
         only_positive_rewards = True # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.25 # tracking reward = exp(-error^2/sigma)
@@ -238,6 +240,7 @@ class LeggedRobotCfgPPO(BaseConfig):
         experiment_name = 'test'
         run_name = ''
         # load and resume
+        
         resume = False
         load_run = -1 # -1 = last run
         checkpoint = -1 # -1 = last saved model
